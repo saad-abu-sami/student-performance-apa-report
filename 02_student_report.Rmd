@@ -1,0 +1,400 @@
+---
+title: "Student Performance: Statistical Analysis Report"
+subtitle: "Welch t-test, one-way ANOVA, correlation, multiple regression and chi-square test (APA 7 style)"
+author: "Saad Abu Sami · Research & Data Science Support"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    self_contained: true
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    keep_tex: false
+geometry: margin=1in
+fontsize: 11pt
+params:
+  show_code: false
+---
+
+```{r setup, include=FALSE}
+# ---------------------------------------------------------------------
+# HOW TO RENDER
+#  1. Put this file and student-mat.csv in the same folder.
+#  2. In R:  install.packages(c("rmarkdown", "knitr", "ggplot2", "jsonlite"))
+#  3. HTML:  rmarkdown::render("02_student_report.Rmd", "html_document")
+#     PDF:   open the HTML in Chrome -> File -> Print -> Save as PDF
+#            (or install.packages("tinytex"); tinytex::install_tinytex()
+#             and run rmarkdown::render("02_student_report.Rmd", "pdf_document"))
+#  Set  params: show_code: true  at the top to include the R code.
+# ---------------------------------------------------------------------
+knitr::opts_chunk$set(
+  echo = isTRUE(params$show_code), warning = FALSE, message = FALSE,
+  fig.width = 6.5, fig.height = 4, dpi = 300, fig.align = "center"
+)
+library(ggplot2)
+theme_set(theme_classic(base_size = 11))
+```
+
+```{r data}
+# ---- Load the raw UCI file (';' separated; a ',' copy from Kaggle also works)
+data_path <- "student-mat.csv"
+sep <- if (grepl(";", readLines(data_path, n = 1))) ";" else ","
+d <- read.csv(data_path, sep = sep, stringsAsFactors = FALSE)
+stopifnot(nrow(d) == 395, ncol(d) == 33, !anyNA(d))
+
+d$internet    <- factor(d$internet, levels = c("no", "yes"),
+                        labels = c("No internet", "Internet"))
+d$school      <- factor(d$school)
+d$studytime_n <- d$studytime
+d$studytime   <- factor(d$studytime, levels = 1:4,
+                        labels = c("<2 h", "2-5 h", "5-10 h", ">10 h"))
+```
+
+```{r helpers}
+# ---- APA formatting helpers
+f2    <- function(x, d = 2) sprintf(paste0("%.", d, "f"), x)
+nl    <- function(x, d = 2) sub("^(-?)0\\.", "\\1.", sprintf(paste0("%.", d, "f"), x)) # no leading zero
+pcell <- function(p) ifelse(p < .001, "< .001", nl(p, 3))
+pfmt  <- function(p) ifelse(p < .001, "< .001", paste("=", nl(p, 3)))
+pct   <- function(x) sprintf("%.1f%%", 100 * x)
+sig   <- function(p) ifelse(p < .05, "statistically significant", "not statistically significant")
+d_lab   <- function(x) { x <- abs(x); ifelse(x < .2, "negligible", ifelse(x < .5, "small", ifelse(x < .8, "medium", "large"))) }
+eta_lab <- function(x) ifelse(x < .01, "very small", ifelse(x < .06, "small", ifelse(x < .14, "medium", "large")))
+r_lab   <- function(x) { x <- abs(x); ifelse(x < .1, "negligible", ifelse(x < .3, "small", ifelse(x < .5, "medium", "large"))) }
+v_lab   <- function(x) ifelse(x < .1, "negligible", ifelse(x < .3, "small", ifelse(x < .5, "medium", "large")))
+
+# Levene's test, median-centred (same as car::leveneTest default)
+levene_med <- function(y, g) {
+  g <- factor(g)
+  z <- abs(y - ave(y, g, FUN = median))
+  a <- anova(lm(z ~ g))
+  c(F = a$`F value`[1], p = a$`Pr(>F)`[1])
+}
+```
+
+```{r compute}
+# ---- 1. Welch t-test
+tt  <- t.test(G3 ~ internet, data = d)
+g3  <- split(d$G3, d$internet)
+gn  <- sapply(g3, length); gm <- sapply(g3, mean); gs <- sapply(g3, sd)
+sp  <- sqrt(((gn[1] - 1) * gs[1]^2 + (gn[2] - 1) * gs[2]^2) / (sum(gn) - 2))
+d_t <- unname((gm[2] - gm[1]) / sp)                 # Internet minus No internet
+lev_t <- levene_med(d$G3, d$internet)
+sh_t  <- sapply(g3, function(x) shapiro.test(x)$p.value)
+
+# ---- 2. One-way ANOVA + Tukey
+fit  <- aov(G3 ~ studytime, data = d)
+a    <- summary(fit)[[1]]
+F_a  <- a$`F value`[1]; df1 <- a$Df[1]; df2 <- a$Df[2]; p_a <- a$`Pr(>F)`[1]
+eta2 <- a$`Sum Sq`[1] / sum(a$`Sum Sq`)
+tuk  <- TukeyHSD(fit)$studytime
+lev_a <- levene_med(d$G3, d$studytime)
+sh_a  <- shapiro.test(residuals(fit))$p.value
+
+# ---- 3. Pearson correlation
+ct <- cor.test(d$G1, d$G3)
+
+# ---- 4. Multiple regression
+m   <- lm(G3 ~ studytime_n + absences + failures, data = d)
+sm  <- summary(m)
+ms  <- lm(scale(G3) ~ scale(studytime_n) + scale(absences) + scale(failures), data = d)
+ci  <- confint(m)
+fs  <- sm$fstatistic
+p_m <- pf(fs[1], fs[2], fs[3], lower.tail = FALSE)
+sh_m <- shapiro.test(residuals(m))$p.value
+cook <- max(cooks.distance(m))
+
+# ---- 5. Chi-square (school x internet)
+tab <- table(school = d$school, internet = d$internet)
+cs  <- chisq.test(tab, correct = FALSE)
+V   <- sqrt(unname(cs$statistic) / (sum(tab) * min(dim(tab) - 1)))
+```
+
+# Summary
+
+This report analyses the public *Student Performance* dataset (Cortez & Silva, 2008; Cortez, 2008): `r nrow(d)` secondary-school mathematics students from two Portuguese schools. Five analyses are shown, each with an assumption check, an APA-style table or figure, and a plain-language interpretation. Final grade (G3) is scored 0 to 20.
+
+```{r summary-table}
+sumtab <- data.frame(
+  Analysis = c("Welch t-test: G3 by internet access",
+               "One-way ANOVA: G3 by study time",
+               "Pearson correlation: G1 and G3",
+               "Multiple regression: G3 on study time, absences, failures",
+               "Chi-square: school by internet access"),
+  Statistic = c(sprintf("t(%s) = %s", f2(tt$parameter), f2(tt$statistic)),
+                sprintf("F(%d, %d) = %s", df1, df2, f2(F_a)),
+                sprintf("r(%d) = %s", ct$parameter, nl(ct$estimate)),
+                sprintf("F(%d, %d) = %s", fs[2], fs[3], f2(fs[1])),
+                sprintf("chi2(%d) = %s", cs$parameter, f2(cs$statistic))),
+  p = c(pcell(tt$p.value), pcell(p_a), pcell(ct$p.value), pcell(p_m), pcell(cs$p.value)),
+  `Effect size` = c(sprintf("d = %s (%s)", f2(abs(d_t)), d_lab(d_t)),
+                    sprintf("eta2 = %s (%s)", nl(eta2, 3), eta_lab(eta2)),
+                    sprintf("r = %s (%s)", nl(ct$estimate), r_lab(ct$estimate)),
+                    sprintf("R2 = %s", nl(sm$r.squared, 3)),
+                    sprintf("V = %s (%s)", nl(V), v_lab(V))),
+  Result = c(ifelse(tt$p.value < .05, "Significant", "Not significant"),
+             ifelse(p_a < .05, "Significant", "Not significant"),
+             ifelse(ct$p.value < .05, "Significant", "Not significant"),
+             ifelse(p_m < .05, "Significant", "Not significant"),
+             ifelse(cs$p.value < .05, "Significant", "Not significant")),
+  check.names = FALSE
+)
+knitr::kable(sumtab, align = "lllll")
+```
+
+*Note.* Effect-size labels follow Cohen's conventions. $\chi^2$ is written chi2, $\eta^2$ is eta2 and $R^2$ is R2 in this table only.
+
+# Data and descriptive statistics
+
+The file `student-mat.csv` contains 33 variables for `r nrow(d)` students with no missing values. Variables used here are the first-, second- and final-period grades (G1, G2, G3), weekly study time (1 = less than 2 h, 2 = 2 to 5 h, 3 = 5 to 10 h, 4 = more than 10 h), number of past class failures, number of school absences, school (GP or MS) and home internet access.
+
+**Table 1**
+
+*Descriptive Statistics for Study Variables (N = `r nrow(d)`)*
+
+```{r desc-table}
+dv  <- c("G1", "G2", "G3", "studytime_n", "failures", "absences")
+lab <- c("First-period grade (G1)", "Second-period grade (G2)", "Final grade (G3)",
+         "Weekly study time (1-4)", "Past class failures", "Absences")
+desc <- data.frame(
+  Variable = lab,
+  M   = unname(sapply(d[dv], function(x) f2(mean(x)))),
+  SD  = unname(sapply(d[dv], function(x) f2(sd(x)))),
+  Min = unname(sapply(d[dv], min)),
+  Max = unname(sapply(d[dv], max))
+)
+knitr::kable(desc, align = c("l", "r", "r", "r", "r"))
+```
+
+# Welch independent-samples t-test
+
+**Research question.** Do students with home internet access have different final grades from students without it?
+
+**Assumptions.** Welch's test does not assume equal variances. Levene's test (median-centred) agreed that variances were similar, *F* = `r f2(lev_t["F"])`, *p* `r pfmt(lev_t["p"])`. Shapiro-Wilk tests showed departures from normality in both groups (largest *p* `r pfmt(max(sh_t))`), which is expected for bounded integer grades. With `r gn[1]` and `r gn[2]` students per group, the t-test is fairly robust, but the result should be read with care.
+
+**Table 2**
+
+*Final Grade (G3) by Home Internet Access*
+
+```{r t-table}
+ttab <- data.frame(
+  Group = names(gm),
+  n  = as.integer(gn),
+  M  = f2(gm),
+  SD = f2(gs)
+)
+knitr::kable(ttab, align = c("l", "r", "r", "r"))
+```
+
+*Note.* Welch test, difference (No internet minus Internet) = `r f2(diff(rev(gm)))`, 95% CI [`r f2(tt$conf.int[1])`, `r f2(tt$conf.int[2])`], *t*(`r f2(tt$parameter)`) = `r f2(tt$statistic)`, *p* `r pfmt(tt$p.value)`, Cohen's *d* = `r f2(abs(d_t))`.
+
+**Figure 1**
+
+*Final Grade by Home Internet Access*
+
+```{r fig-t}
+ggplot(d, aes(internet, G3)) +
+  geom_boxplot(width = .45, outlier.shape = NA, fill = "grey90", colour = "grey20") +
+  geom_jitter(width = .12, height = 0, alpha = .35, size = 1.2, colour = "grey30") +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  labs(x = NULL, y = "Final grade (G3, 0-20)")
+```
+
+*Note.* Diamonds show group means; boxes show medians and quartiles.
+
+**Interpretation.** Students with internet access (*M* = `r f2(gm[2])`, *SD* = `r f2(gs[2])`) scored `r f2(gm[2] - gm[1])` points higher than students without it (*M* = `r f2(gm[1])`, *SD* = `r f2(gs[1])`). The difference was `r sig(tt$p.value)`, *t*(`r f2(tt$parameter)`) = `r f2(tt$statistic)`, *p* `r pfmt(tt$p.value)`, with a `r d_lab(d_t)` effect (*d* = `r f2(abs(d_t))`). `r if (abs(tt$p.value - .05) < .005) paste0("The p value (", sprintf("%.4f", tt$p.value), " before rounding) sits right on the .05 boundary, and the confidence interval almost touches zero, so this is weak evidence and should be replicated before being relied on.") else ""` Because the data are observational, internet access may stand in for family resources and should not be read as a cause of higher grades.
+
+# One-way ANOVA
+
+**Research question.** Do final grades differ across the four weekly study-time levels?
+
+**Assumptions.** Levene's test indicated `r ifelse(lev_a["p"] < .05, "unequal", "similar")` variances across groups, *F*(`r df1`, `r df2`) = `r f2(lev_a["F"])`, *p* `r pfmt(lev_a["p"])`. Residuals departed from normality (Shapiro-Wilk *p* `r pfmt(sh_a)`), which is common for grade data; the groups are unequal in size (`r paste(table(d$studytime), collapse = ", ")`), so conclusions are tentative.
+
+**Table 3**
+
+*Final Grade (G3) by Weekly Study Time*
+
+```{r anova-table}
+s2 <- do.call(rbind, lapply(split(d, d$studytime), function(x) {
+  n <- nrow(x); mu <- mean(x$G3); se <- sd(x$G3) / sqrt(n)
+  data.frame(studytime = x$studytime[1], n = n, M = mu, SD = sd(x$G3),
+             lo = mu - qt(.975, n - 1) * se, hi = mu + qt(.975, n - 1) * se)
+}))
+atab <- data.frame(
+  `Study time` = as.character(s2$studytime), n = s2$n,
+  M = f2(s2$M), SD = f2(s2$SD),
+  `95% CI` = sprintf("[%s, %s]", f2(s2$lo), f2(s2$hi)),
+  check.names = FALSE
+)
+knitr::kable(atab, align = c("l", "r", "r", "r", "r"))
+```
+
+*Note.* One-way ANOVA: *F*(`r df1`, `r df2`) = `r f2(F_a)`, *p* `r pfmt(p_a)`, $\eta^2$ = `r nl(eta2, 3)`.
+
+**Table 4**
+
+*Tukey HSD Pairwise Comparisons of Study-Time Groups*
+
+```{r tukey-table}
+ttab2 <- data.frame(
+  Comparison = rownames(tuk),
+  `Mean difference` = f2(tuk[, "diff"]),
+  `95% CI` = sprintf("[%s, %s]", f2(tuk[, "lwr"]), f2(tuk[, "upr"])),
+  `p (adjusted)` = pcell(tuk[, "p adj"]),
+  check.names = FALSE
+)
+knitr::kable(ttab2, align = c("l", "r", "r", "r"))
+```
+
+**Figure 2**
+
+*Mean Final Grade by Weekly Study Time*
+
+```{r fig-anova}
+ggplot(s2, aes(studytime, M, group = 1)) +
+  geom_line(colour = "grey60") +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = .12, colour = "grey20") +
+  geom_point(size = 3, colour = "grey10") +
+  labs(x = "Weekly study time", y = "Mean final grade (G3)")
+```
+
+*Note.* Error bars show 95% confidence intervals.
+
+**Interpretation.** Mean grades rose from `r f2(s2$M[1])` (less than 2 h) to `r f2(max(s2$M))` at the highest-scoring study-time group, but the overall effect of study time was `r sig(p_a)`, *F*(`r df1`, `r df2`) = `r f2(F_a)`, *p* `r pfmt(p_a)`, $\eta^2$ = `r nl(eta2, 3)` (`r eta_lab(eta2)` effect). `r if (all(tuk[, "p adj"] >= .05)) "No pairwise comparison reached significance after Tukey adjustment." else "At least one pairwise comparison was significant after Tukey adjustment (Table 4)."` Self-reported study time explains very little of the variation in final grade in this sample.
+
+# Pearson correlation
+
+**Research question.** How strongly are first-period (G1) and final (G3) grades related?
+
+**Figure 3**
+
+*First-Period Grade and Final Grade*
+
+```{r fig-cor}
+ggplot(d, aes(G1, G3)) +
+  geom_jitter(width = .25, height = .25, alpha = .4, size = 1.4, colour = "grey30") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black", fill = "grey70") +
+  labs(x = "First-period grade (G1)", y = "Final grade (G3)")
+```
+
+*Note.* Points are jittered slightly because grades are whole numbers. The line is the least-squares fit with a 95% confidence band.
+
+**Result.** G1 and G3 were strongly and positively correlated, *r*(`r ct$parameter`) = `r nl(ct$estimate)`, 95% CI [`r nl(ct$conf.int[1])`, `r nl(ct$conf.int[2])`], *p* `r pfmt(ct$p.value)`. G1 shares about `r pct(ct$estimate^2)` of its variance with G3 ($r^2$ = `r nl(ct$estimate^2)`). Students who start well tend to finish well, which is useful for early-warning systems but says nothing about why.
+
+# Multiple linear regression
+
+**Research question.** How well do weekly study time, absences and past failures together predict the final grade?
+
+**Table 5**
+
+*Regression of Final Grade (G3) on Study Time, Absences and Past Failures*
+
+```{r reg-table}
+labs_m <- c("Intercept", "Weekly study time (1-4)", "Absences", "Past class failures")
+cf <- sm$coefficients
+rtab <- data.frame(
+  Predictor = labs_m,
+  B   = f2(cf[, 1]),
+  SE  = f2(cf[, 2]),
+  `Std. beta` = c("", f2(coef(ms)[-1])),
+  t   = f2(cf[, 3]),
+  p   = pcell(cf[, 4]),
+  `95% CI` = sprintf("[%s, %s]", f2(ci[, 1]), f2(ci[, 2])),
+  check.names = FALSE
+)
+knitr::kable(rtab, align = c("l", "r", "r", "r", "r", "r", "r"))
+```
+
+*Note.* *N* = `r nobs(m)`. $R^2$ = `r nl(sm$r.squared, 3)`, adjusted $R^2$ = `r nl(sm$adj.r.squared, 3)`, *F*(`r fs[2]`, `r fs[3]`) = `r f2(fs[1])`, *p* `r pfmt(p_m)`. Residual *SE* = `r f2(sm$sigma)`.
+
+**Assumptions.** The largest Cook's distance was `r f2(cook, 3)` (well below 1), so no single student drives the result. Residuals deviated from normality (Shapiro-Wilk *p* `r pfmt(sh_m)`, see Figure 4), so standard errors and *p* values should be read as approximate.
+
+**Figure 4**
+
+*Normal Q-Q Plot of Regression Residuals*
+
+```{r fig-qq}
+ggplot(data.frame(res = residuals(m)), aes(sample = res)) +
+  stat_qq(alpha = .5, colour = "grey30") + stat_qq_line(colour = "black") +
+  labs(x = "Theoretical quantiles", y = "Sample quantiles")
+```
+
+**Interpretation.** The model was `r sig(p_m)` and explained `r pct(sm$r.squared)` of the variance in final grade, *F*(`r fs[2]`, `r fs[3]`) = `r f2(fs[1])`, *p* `r pfmt(p_m)`. Past failures was the dominant predictor: each additional failure was associated with a drop of `r f2(abs(cf[4, 1]))` grade points (*B* = `r f2(cf[4, 1])`, *p* `r pfmt(cf[4, 4])`, standardised $\beta$ = `r f2(coef(ms)[4])`) after accounting for the other predictors. Study time (*p* `r pfmt(cf[2, 4])`) and absences (*p* `r pfmt(cf[3, 4])`) did not add significant independent prediction.
+
+# Chi-square test of independence
+
+**Research question.** Is school (GP vs. MS) associated with having internet at home?
+
+**Table 6**
+
+*Home Internet Access by School*
+
+```{r chi-table}
+rp <- prop.table(tab, 1)
+ctab <- data.frame(
+  School = rownames(tab),
+  `No internet, n (%)` = sprintf("%d (%s)", tab[, 1], pct(rp[, 1])),
+  `Internet, n (%)`    = sprintf("%d (%s)", tab[, 2], pct(rp[, 2])),
+  check.names = FALSE
+)
+knitr::kable(ctab, align = c("l", "r", "r"))
+```
+
+*Note.* Percentages are row percentages.
+
+**Figure 5**
+
+*Proportion of Students With Home Internet Access, by School*
+
+```{r fig-chi}
+pd <- as.data.frame(rp, responseName = "prop")
+ggplot(pd, aes(school, prop, fill = internet)) +
+  geom_col(width = .55, colour = "grey20") +
+  scale_fill_manual(values = c("grey85", "grey40"), name = NULL) +
+  scale_y_continuous(labels = function(x) paste0(round(100 * x), "%")) +
+  labs(x = "School", y = "Share of students")
+```
+
+**Result.** All expected counts were at least 5 (smallest = `r f2(min(cs$expected))`), so the chi-square test is appropriate. School and internet access were `r ifelse(cs$p.value < .05, "significantly associated", "not significantly associated")`, $\chi^2$(`r cs$parameter`, *N* = `r sum(tab)`) = `r f2(cs$statistic)`, *p* `r pfmt(cs$p.value)`, Cramér's *V* = `r nl(V)` (`r v_lab(V)` effect). Internet access was reported by `r pct(rp[1, 2])` of students at `r rownames(tab)[1]` and `r pct(rp[2, 2])` at `r rownames(tab)[2]`.
+
+# Limitations
+
+- The data come from two Portuguese schools, so results may not generalise to other countries or years.
+- All variables are observational and self-reported. No causal claims are made.
+- Grades are bounded whole numbers with zeros, so normality assumptions are only approximately met. Robust or non-parametric checks would be added in a full thesis analysis.
+- Five tests were run for demonstration. In a real study, multiple comparisons and a pre-specified analysis plan would be reported.
+
+# Reproducibility
+
+```{r repro, echo=FALSE}
+chk <- NULL
+gt <- "r-ground-truth.json"
+if (file.exists(gt) && requireNamespace("jsonlite", quietly = TRUE)) {
+  j <- jsonlite::fromJSON(gt)
+  same <- function(a, b) isTRUE(all.equal(as.numeric(a), as.numeric(b), tolerance = 1e-6))
+  chk <- data.frame(
+    Check = c("Welch t", "ANOVA F", "Pearson r", "Regression R2", "Chi-square"),
+    `Matches r-ground-truth.json` = c(
+      same(tt$statistic, j$t_test$t), same(F_a, j$anova$F),
+      same(ct$estimate, j$correlation$r), same(sm$r.squared, j$regression$r_squared),
+      same(cs$statistic, j$chi_square$chi2)),
+    check.names = FALSE)
+}
+if (!is.null(chk)) knitr::kable(chk, align = "lc") else cat("(r-ground-truth.json not found in this folder; verification skipped.)")
+```
+
+Analysis: `r R.version.string`; ggplot2 `r as.character(packageVersion("ggplot2"))`. All code, the cleaned data file and the verification file are available on request and in the project repository.
+
+# References
+
+Cortez, P. (2008). *Student performance* [Data set]. UCI Machine Learning Repository. https://doi.org/10.24432/C5TG7T
+
+Cortez, P., & Silva, A. (2008). Using data mining to predict secondary school student performance. In A. Brito & J. Teixeira (Eds.), *Proceedings of 5th FUture BUsiness TEChnology Conference (FUBUTEC 2008)* (pp. 5-12). EUROSIS.
+
+R Core Team. (2026). *R: A language and environment for statistical computing* (Version 4.6.2) [Computer software]. R Foundation for Statistical Computing. https://www.R-project.org/
+
+Wickham, H. (2016). *ggplot2: Elegant graphics for data analysis*. Springer-Verlag.
